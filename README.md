@@ -21,6 +21,13 @@ All scripts are Tampermonkey-compatible. Click to install directly:
 
 ---
 
+## ❓ Need Help?
+
+Having issues or questions?  
+Check out the 📌 [Q&A Guide: How to Ask for Help](https://github.com/howermj/TweakGPT-scripts/discussions) before posting.
+
+---
+
 ## 🤝 Contributing
 
 Want to contribute? Open an issue or submit a pull request.
