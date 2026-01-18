@@ -1,15 +1,15 @@
-// Filename: tweakgpt-save-chat-from-header.user.js
+// Filename: tweakgpt-save-chat-header.user.js
 // ==UserScript==
 // @name         TweakGPT – Save Chat (.md) Button in Header
 // @namespace    https://github.com/howermj/TweakGPT-scripts
-// @version      1.1
-// @description  Adds a "Save" button next to Share in the chat header to download the current conversation as Markdown.
+// @version      1.2
+// @description  Adds a "Save" button next to Share in the chat header to download the current conversation as Markdown (with code-block preflight render).
 // @author       howermj + Eve (GPT-5.2 Thinking)
 // @match        https://chat.openai.com/*
 // @match        https://chatgpt.com/*
 // @grant        none
-// @downloadURL  https://raw.githubusercontent.com/howermj/TweakGPT-scripts/main/tweakgpt-save-chat-from-header.user.js
-// @updateURL    https://raw.githubusercontent.com/howermj/TweakGPT-scripts/main/tweakgpt-save-chat-from-header.user.js
+// @downloadURL  https://raw.githubusercontent.com/howermj/TweakGPT-scripts/main/tweakgpt-save-chat-header.user.js
+// @updateURL    https://raw.githubusercontent.com/howermj/TweakGPT-scripts/main/tweakgpt-save-chat-header.user.js
 // ==/UserScript==
 
 (function () {
@@ -58,6 +58,78 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const raf = () => new Promise((r) => requestAnimationFrame(() => r()));
+
+  // ---------- Extract conversation ----------
+  const getConversationTurns = () => {
+    let turns = [];
+    for (const sel of TURN_SELECTORS) {
+      const found = Array.from(document.querySelectorAll(sel));
+      if (found.length) { turns = found; break; }
+    }
+
+    // Normalize: if we matched [data-message-author-role], prefer nearest article wrapper
+    if (turns.length && turns[0]?.getAttribute && turns[0].hasAttribute("data-message-author-role")) {
+      turns = turns.map((n) => n.closest("article") || n);
+    }
+
+    return Array.from(new Set(turns)).filter(Boolean);
+  };
+
+  const getRoleForTurn = (turn) => {
+    const roleEl = turn.querySelector?.("[data-message-author-role]");
+    const r = roleEl ? roleEl.getAttribute("data-message-author-role") : "";
+    return r ? norm(r) : "assistant";
+  };
+
+  const getContentElementForTurn = (turn) => {
+    const md = turn.querySelector?.(".markdown");
+    if (md) return md;
+    const roleEl = turn.querySelector?.("[data-message-author-role]");
+    return roleEl || turn;
+  };
+
+  // ---------- Preflight: force code blocks to render ----------
+  const preflightRenderCodeBlocks = async () => {
+    const turns = getConversationTurns();
+    if (!turns.length) return;
+
+    const scrollingEl = document.scrollingElement || document.documentElement;
+    const originalScrollTop = scrollingEl.scrollTop;
+
+    // Collect <pre> elements inside the conversation turns (in DOM order)
+    const pres = [];
+    for (const t of turns) {
+      for (const pre of Array.from(t.querySelectorAll("pre"))) pres.push(pre);
+    }
+
+    if (!pres.length) return;
+
+    // Avoid thrashing on huge chats
+    const MAX_PREFLIGHT = 60;
+    const list = pres.slice(0, MAX_PREFLIGHT);
+
+    log(`preflight: ${list.length} code blocks`);
+
+    // Scroll each <pre> into view briefly so ChatGPT hydrates/paints it.
+    // Then yield a frame and a tiny delay for text nodes to appear.
+    for (const pre of list) {
+      try {
+        pre.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+      } catch {
+        // behavior: "instant" isn't supported everywhere; fallback
+        pre.scrollIntoView({ block: "center", inline: "nearest" });
+      }
+      await raf();
+      await sleep(20);
+    }
+
+    // Restore scroll position
+    scrollingEl.scrollTop = originalScrollTop;
+    await raf();
+  };
+
   // ---------- DOM -> Markdown ----------
   const escapeInlineBackticks = (s) => String(s || "").replace(/`/g, "\\`");
 
@@ -85,24 +157,29 @@
     if (tag === "PRE") {
       const code = el.querySelector("code") || el;
       const lang = getCodeLang(code);
-      const body = (code.innerText || "").replace(/\n+$/g, "");
+
+      // Prefer textContent (more reliable for code blocks), fall back to innerText.
+      let body = (code.textContent || code.innerText || "").replace(/\n+$/g, "");
+      // If still empty, try the <pre> itself (some layouts don’t put text on <code>)
+      if (!body) body = (el.textContent || el.innerText || "").replace(/\n+$/g, "");
+
       return `\n\`\`\`${lang}\n${body}\n\`\`\`\n`;
     }
 
     if (tag === "CODE") {
-      return `\`${escapeInlineBackticks(el.innerText || "")}\``;
+      return `\`${escapeInlineBackticks(el.innerText || el.textContent || "")}\``;
     }
 
     if (tag === "A") {
       const href = el.getAttribute("href") || "";
-      const label = (el.innerText || href || "").trim().replace(/\n+/g, " ");
+      const label = (el.innerText || el.textContent || href || "").trim().replace(/\n+/g, " ");
       return href ? `[${label}](${href})` : label;
     }
 
     if (/^H[1-6]$/.test(tag)) {
       const level = Number(tag.slice(1));
       const hashes = "#".repeat(Math.max(1, Math.min(6, level)));
-      const t = (el.innerText || "").replace(/\n+/g, " ").trim();
+      const t = (el.innerText || el.textContent || "").replace(/\n+/g, " ").trim();
       return `\n${hashes} ${t}\n\n`;
     }
 
@@ -140,40 +217,10 @@
     return childrenToMarkdown(el);
   };
 
-  // ---------- Extract conversation ----------
-  const getConversationTurns = () => {
-    // Use the first selector that yields results.
-    let turns = [];
-    for (const sel of TURN_SELECTORS) {
-      const found = Array.from(document.querySelectorAll(sel));
-      if (found.length) {
-        turns = found;
-        break;
-      }
-    }
+  const exportCurrentChatToMarkdown = async () => {
+    // Preflight to hydrate code blocks before scraping
+    await preflightRenderCodeBlocks();
 
-    // Normalize: if we matched [data-message-author-role], prefer nearest article wrapper
-    if (turns.length && turns[0]?.getAttribute && turns[0].hasAttribute("data-message-author-role")) {
-      turns = turns.map((n) => n.closest("article") || n);
-    }
-
-    return Array.from(new Set(turns)).filter(Boolean);
-  };
-
-  const getRoleForTurn = (turn) => {
-    const roleEl = turn.querySelector?.("[data-message-author-role]");
-    const r = roleEl ? roleEl.getAttribute("data-message-author-role") : "";
-    return r ? norm(r) : "assistant";
-  };
-
-  const getContentElementForTurn = (turn) => {
-    const md = turn.querySelector?.(".markdown");
-    if (md) return md;
-    const roleEl = turn.querySelector?.("[data-message-author-role]");
-    return roleEl || turn;
-  };
-
-  const exportCurrentChatToMarkdown = () => {
     const title = getChatTitle();
     const chatId = getChatIdFromUrl();
     const now = new Date();
@@ -202,7 +249,8 @@
 
       const sectionTitle = role === "user" ? "User" : "Assistant";
       let md = childrenToMarkdown(contentEl).trim();
-      if (!md) md = (contentEl.innerText || "").trim();
+
+      if (!md) md = (contentEl.innerText || contentEl.textContent || "").trim();
       if (!md) continue;
 
       body += `## ${sectionTitle}\n\n${md}\n\n---\n\n`;
@@ -229,11 +277,9 @@
     if (shareBtn && shareBtn.className) {
       btn.className = shareBtn.className;
     } else {
-      // Fallback styling
       btn.className = "btn relative btn-ghost text-token-text-primary hover:bg-token-surface-hover rounded-lg";
     }
 
-    // Mirror Share content structure (icon + label)
     btn.innerHTML = `
       <div class="flex w-full items-center justify-center gap-1.5">
         <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" aria-hidden="true" class="-ms-0.5 icon" viewBox="0 0 24 24">
@@ -243,10 +289,10 @@
       </div>
     `;
 
-    btn.addEventListener("click", (e) => {
+    btn.addEventListener("click", async (e) => {
       e.preventDefault();
       e.stopPropagation();
-      exportCurrentChatToMarkdown();
+      await exportCurrentChatToMarkdown();
     });
 
     return btn;
@@ -260,16 +306,37 @@
     if (!actions || !shareBtn) return;
 
     const saveBtn = makeSaveButton();
-
-    // Insert immediately before Share (Share stays rightmost)
     actions.insertBefore(saveBtn, shareBtn);
 
     log("Injected Save button in header.");
   };
 
-  // Observe DOM because header loads lazily / rerenders
   const observer = new MutationObserver(() => injectSaveButton());
   observer.observe(document.documentElement, { childList: true, subtree: true });
 
   injectSaveButton();
+
+// Hotkey: Ctrl+S / Cmd+S saves chat as .md (prevents browser "Save page" dialog)
+document.addEventListener("keydown", (e) => {
+  const key = (e.key || "").toLowerCase();
+  const isMac = navigator.platform.toLowerCase().includes("mac");
+  const saveCombo = (isMac && e.metaKey && key === "s") || (!isMac && e.ctrlKey && key === "s");
+  if (!saveCombo) return;
+
+  // Don’t hijack if user is typing in an input/textarea/contenteditable
+  const t = e.target;
+  const tag = t && t.tagName ? t.tagName.toLowerCase() : "";
+  const isTypingTarget =
+    tag === "input" ||
+    tag === "textarea" ||
+    (t && t.isContentEditable);
+
+  if (isTypingTarget) return;
+
+  e.preventDefault();
+  e.stopPropagation();
+  exportCurrentChatToMarkdown();
+}, true);
+
+
 })();
