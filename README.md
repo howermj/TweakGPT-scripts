@@ -17,7 +17,8 @@ All scripts are Tampermonkey-compatible. Click to install directly:
 | **TweakGPT – File Upload Warning**      | Adds a persistent banner reminding users not to upload sensitive files.     | [Install](https://raw.githubusercontent.com/howermj/TweakGPT-scripts/main/tweakgpt-file-upload-warning.user.js) |
 | **TweakGPT – Toggle Custom GPTs**       | Adds a sidebar toggle below “Sora” to show or hide the Custom GPT section.  | [Install](https://raw.githubusercontent.com/howermj/TweakGPT-scripts/main/tweakgpt-toggle-custom-gpts.user.js) |
 | **TweakGPT – Toggle Projects Panel**    | Adds a button to hide or show the Projects panel and “New Project” button.  | [Install](https://raw.githubusercontent.com/howermj/TweakGPT-scripts/main/tweakgpt-toggle-projects-panel.user.js) |
-| **TweakGPT – Remove “View Plans” Block**| Hides the “View Plans” subscription prompt for a cleaner, focused UI.        | [Install](https://raw.githubusercontent.com/howermj/TweakGPT-scripts/main/tweakgpt-remove-view-plans.user.js) |
+| **TweakGPT – Remove “View Plans” Block**| Hides the “View Plans” subscription prompt for a cleaner, focused UI.
+Deprecated (View Plans block removed fall 2025)| [Install](https://raw.githubusercontent.com/howermj/TweakGPT-scripts/main/tweakgpt-remove-view-plans.user.js) |
 
 ---
 
