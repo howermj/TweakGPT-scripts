@@ -1,50 +1,160 @@
-// Filename: tweakgpt-gpt-or-project-name-in-header.user.js
+// Filename: tweakgpt-project-name-instead-of-folder-icon.user.js
 // ==UserScript==
-// @name         TweakGPT – Show GPT or Project Name in Header
+// @name         TweakGPT – Show Project Name Instead of Folder Icon
 // @namespace    https://github.com/howermj/TweakGPT-scripts
-// @version      1.2
-// @description  Displays the GPT persona or project name in the top header consistently.
-// @author       howermj + Eve (GPT-5.2 Thinking)
+// @version      1.0
+// @description  Replaces the project “folder” icon in the top bar with the actual project name (taken from aria-label).
+// @author       howermj + Eve
 // @match        https://chat.openai.com/*
 // @match        https://chatgpt.com/*
 // @grant        none
-// @downloadURL  https://raw.githubusercontent.com/howermj/TweakGPT-scripts/main/tweakgpt-gpt-or-project-name-in-header.user.js
-// @updateURL    https://raw.githubusercontent.com/howermj/TweakGPT-scripts/main/tweakgpt-gpt-or-project-name-in-header.user.js
 // ==/UserScript==
 
-(function () {
-  'use strict';
+(() => {
+  "use strict";
 
-  const updateHeaderWithContext = () => {
-    const headerTitle = document.querySelector('[data-headlessui-state] h1');
-    if (!headerTitle) return;
+  const STYLE_ID = "tweakgpt-project-name-style";
+  const MARK_ATTR = "data-tweakgpt-project-name";
+  const SPAN_CLASS = "tweakgpt-project-name-span";
+  const LINK_CLASS = "tweakgpt-project-name-link";
 
-    // Skip if already appended
-    if (headerTitle.textContent.includes('–')) return;
+  const ensureStyle = () => {
+    if (document.getElementById(STYLE_ID)) return;
 
-    // Try to find Custom GPT name (e.g., "Alex 3.2 (i5.2)")
-    const customGptTag = document.querySelector('button[aria-haspopup="menu"] span');
-    const customGptName = customGptTag?.textContent?.trim();
+    const style = document.createElement("style");
+    style.id = STYLE_ID;
+    style.textContent = `
+      /* Make the “project button” behave like a label instead of a fixed square icon */
+      a.${LINK_CLASS} {
+        width: auto !important;              /* overrides w-9 */
+        min-width: 2.25rem !important;       /* keep a sane hit target */
+        padding-left: 0.6rem !important;
+        padding-right: 0.6rem !important;
+        gap: 0.4rem !important;
+        white-space: nowrap !important;
+      }
 
-    // Try to find Project name (e.g., "(Eve) Digital Oracle")
-    const projectNode = [...document.querySelectorAll('nav a span')]
-      .map(span => span.textContent.trim())
-      .find(text => text.match(/^\(.*\)\s.+$/)); // matches something like (Eve) Digital Oracle
+      /* Hide the SVG folder icon */
+      a.${LINK_CLASS} svg {
+        display: none !important;
+      }
 
-    // Determine what to show
-    const label = customGptName || projectNode;
-    if (!label) return;
+      /* If ChatGPT wraps icon in a div, keep it from occupying space */
+      a.${LINK_CLASS} > div {
+        display: none !important;
+      }
 
-    headerTitle.textContent = `${headerTitle.textContent.trim()} – ${label}`;
+      /* The text label */
+      a.${LINK_CLASS} .${SPAN_CLASS} {
+        display: inline-block !important;
+        max-width: 32ch;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 0.95rem;
+        line-height: 1;
+      }
+    `;
+    document.head.appendChild(style);
   };
 
-  const setupObserver = () => {
-    const observer = new MutationObserver(updateHeaderWithContext);
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true
+  const extractProjectNameFromAria = (a) => {
+    const raw = (a.getAttribute("aria-label") || "").trim();
+    if (!raw) return "";
+
+    // "Open (Eve) Digital Oracle project" -> "(Eve) Digital Oracle"
+    return raw
+      .replace(/^Open\s+/i, "")
+      .replace(/\s*project$/i, "")
+      .trim();
+  };
+
+  const isProjectHeaderLink = (a) => {
+    if (!a || a.tagName !== "A") return false;
+
+    const href = (a.getAttribute("href") || "").trim();
+    const aria = (a.getAttribute("aria-label") || "").trim();
+
+    // Your example: /g/g-p-<id>-<slug>/project
+    const hrefLooksRight =
+      href.includes("/g/g-p-") && href.endsWith("/project");
+
+    const ariaLooksRight =
+      /^Open\s+.+\s+project$/i.test(aria);
+
+    return hrefLooksRight && ariaLooksRight;
+  };
+
+  const enhanceLink = (a) => {
+    if (a.getAttribute(MARK_ATTR) === "1") return;
+
+    const name = extractProjectNameFromAria(a);
+    if (!name) return;
+
+    ensureStyle();
+
+    a.setAttribute(MARK_ATTR, "1");
+    a.classList.add(LINK_CLASS);
+
+    // Avoid duplicate spans if React reuses nodes oddly
+    const existing = a.querySelector(`.${SPAN_CLASS}`);
+    if (existing) {
+      existing.textContent = name;
+      return;
+    }
+
+    const span = document.createElement("span");
+    span.className = SPAN_CLASS;
+    span.textContent = name;
+
+    a.appendChild(span);
+  };
+
+  const apply = () => {
+    const anchors = Array.from(document.querySelectorAll('a[aria-label^="Open "]'));
+    for (const a of anchors) {
+      if (isProjectHeaderLink(a)) enhanceLink(a);
+    }
+  };
+
+  // Debounced scheduler for SPA re-renders
+  let scheduled = false;
+  const scheduleApply = () => {
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(() => {
+      scheduled = false;
+      apply();
     });
   };
 
-  setupObserver();
+  const hookHistory = () => {
+    const { pushState, replaceState } = history;
+
+    history.pushState = function () {
+      const r = pushState.apply(this, arguments);
+      scheduleApply();
+      return r;
+    };
+
+    history.replaceState = function () {
+      const r = replaceState.apply(this, arguments);
+      scheduleApply();
+      return r;
+    };
+
+    window.addEventListener("popstate", scheduleApply, { passive: true });
+  };
+
+  const start = () => {
+    hookHistory();
+
+    const mo = new MutationObserver(scheduleApply);
+    mo.observe(document.documentElement, { childList: true, subtree: true });
+
+    // Initial run
+    scheduleApply();
+  };
+
+  start();
 })();
