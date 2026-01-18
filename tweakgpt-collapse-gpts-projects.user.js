@@ -20,8 +20,8 @@
   const SECTION_LABELS = ["GPTs", "Projects"];
   const DEBUG = false;
 
-  // Re-try window: UI mounts progressively; we re-run for a short period.
-  const RETRY_MS = 6000;
+  // Only auto-collapse during this short window after load/route.
+  const ARM_MS = 4500;
   const RETRY_EVERY_MS = 250;
 
   const log = (...a) => { if (DEBUG) console.log("[cgpt-collapse]", ...a); };
@@ -31,6 +31,28 @@
       .replace(/\s+/g, " ")
       .trim()
       .toLowerCase();
+
+  // ---- State ----
+  let armedUntil = Date.now() + ARM_MS;
+  let retryTimer = null;
+  let mo = null;
+
+  // If the user manually toggles a section, we stop auto-collapsing that section
+  // until the next route change/reload.
+  const userOverride = new Set();
+
+  // If we successfully collapsed a section once this cycle, we don’t need to keep trying.
+  const collapsedOnce = new Set();
+
+  const resetCycle = () => {
+    armedUntil = Date.now() + ARM_MS;
+    userOverride.clear();
+    collapsedOnce.clear();
+    stopRetryLoop();
+    disconnectObserver();
+  };
+
+  const withinArmingWindow = () => Date.now() < armedUntil;
 
   // Try to identify "sidebar-ish" containers to avoid matching main content.
   const findSidebarRoots = () => {
@@ -58,54 +80,46 @@
 
   const getLabelFromEl = (el) => {
     if (!el) return "";
-    // Prefer aria-label; otherwise visible text.
     const aria = el.getAttribute && el.getAttribute("aria-label");
     if (aria) return aria;
     return el.textContent || "";
   };
 
   // Find the clickable toggle for a given section label.
-  // We prefer elements with aria-expanded (common for disclosure toggles).
   const findSectionToggles = (root, label) => {
     const want = norm(label);
-
     const toggles = [];
 
-    const clickable = root.querySelectorAll(
-      'button, [role="button"], summary, a'
-    );
+    const clickable = root.querySelectorAll('button, [role="button"], summary, a');
 
     for (const el of clickable) {
       const txt = norm(getLabelFromEl(el));
 
-      // Many UIs render "Projects" as "Projects" or "Projects 12"
+      // e.g. "Projects" or "Projects 12"
       const startsRight = txt === want || txt.startsWith(want + " ");
       const containsRight = txt.includes(want);
 
       if (!startsRight && !containsRight) continue;
 
-      // If the element itself isn’t a disclosure, often its closest button is.
       const candidate =
-        el.matches("button,[role='button'],summary") ? el : el.closest("button,[role='button'],summary");
+        el.matches("button,[role='button'],summary")
+          ? el
+          : el.closest("button,[role='button'],summary");
 
       if (!candidate) continue;
 
-      // Strong signal: aria-expanded present.
       const hasAriaExpanded = candidate.hasAttribute && candidate.hasAttribute("aria-expanded");
-      // Another possible signal: inside a <details>.
       const inDetails = !!candidate.closest("details");
 
       if (hasAriaExpanded || inDetails) toggles.push(candidate);
     }
 
-    // De-dupe
     return Array.from(new Set(toggles));
   };
 
   const collapseIfOpen = (toggle) => {
     if (!toggle) return false;
 
-    // Case 1: aria-expanded toggle
     const ae = toggle.getAttribute && toggle.getAttribute("aria-expanded");
     if (ae === "true") {
       log("click collapse (aria-expanded=true):", toggle);
@@ -114,7 +128,6 @@
     }
     if (ae === "false") return false;
 
-    // Case 2: <details open>
     const details = toggle.closest && toggle.closest("details");
     if (details && details.open) {
       log("close details:", details);
@@ -122,32 +135,81 @@
       return true;
     }
 
-    // Unknown state: don’t spam clicks.
     return false;
   };
 
   const runOnce = () => {
-    const roots = findSidebarRoots();
+    if (!withinArmingWindow()) return false;
 
+    const roots = findSidebarRoots();
     let didSomething = false;
 
     for (const root of roots) {
       for (const label of SECTION_LABELS) {
-        const toggles = findSectionToggles(root, label);
+        const key = norm(label);
 
+        // Respect the user: if they’ve manually toggled this section, don’t touch it.
+        if (userOverride.has(key)) continue;
+
+        // If we already collapsed it once this cycle, don’t keep poking.
+        if (collapsedOnce.has(key)) continue;
+
+        const toggles = findSectionToggles(root, label);
         for (const t of toggles) {
-          // Try to avoid collapsing “See more” etc by requiring the label to be close.
-          // (Still heuristic; if it misfires, narrow by inspecting in DEBUG mode.)
           const changed = collapseIfOpen(t);
-          if (changed) didSomething = true;
+          if (changed) {
+            collapsedOnce.add(key);
+            didSomething = true;
+          }
         }
       }
+    }
+
+    // If we’ve collapsed everything we can (or the user overrode), stop watching.
+    const allHandled =
+      SECTION_LABELS.every((lbl) => userOverride.has(norm(lbl)) || collapsedOnce.has(norm(lbl)));
+
+    if (allHandled) {
+      log("all handled; stopping observers");
+      stopRetryLoop();
+      disconnectObserver();
     }
 
     return didSomething;
   };
 
-  // SPA navigation: re-run on URL changes + on DOM mutations.
+  // ---- Respect user clicks ----
+  // If the user clicks a GPTs/Projects header toggle, we mark that section as manual override.
+  const installUserClickGuard = () => {
+    document.addEventListener(
+      "click",
+      (e) => {
+        const target = e.target;
+        if (!target) return;
+
+        const btn = target.closest && target.closest("button,[role='button'],summary");
+        if (!btn) return;
+
+        const txt = norm(getLabelFromEl(btn));
+
+        for (const lbl of SECTION_LABELS) {
+          const k = norm(lbl);
+          if (txt === k || txt.startsWith(k + " ") || txt.includes(k)) {
+            userOverride.add(k);
+            log("user override:", lbl);
+
+            // Once the user has taken control, stop fighting the DOM this cycle.
+            stopRetryLoop();
+            disconnectObserver();
+            return;
+          }
+        }
+      },
+      true // capture: catch it early
+    );
+  };
+
+  // ---- SPA navigation + watchers ----
   const hookHistory = () => {
     const _pushState = history.pushState;
     const _replaceState = history.replaceState;
@@ -170,39 +232,59 @@
   };
 
   const startRetryLoop = () => {
-    const start = Date.now();
-    const timer = setInterval(() => {
+    stopRetryLoop();
+    retryTimer = setInterval(() => {
       runOnce();
-
-      if (Date.now() - start > RETRY_MS) clearInterval(timer);
+      if (!withinArmingWindow()) stopRetryLoop();
     }, RETRY_EVERY_MS);
   };
 
+  const stopRetryLoop = () => {
+    if (retryTimer) {
+      clearInterval(retryTimer);
+      retryTimer = null;
+    }
+  };
+
   const observeDom = () => {
-    const mo = new MutationObserver(() => {
-      // Cheap debounce: let the UI settle a beat.
+    disconnectObserver();
+
+    mo = new MutationObserver(() => {
+      if (!withinArmingWindow()) return;
+
+      // Debounce to next frame
       if (observeDom._t) cancelAnimationFrame(observeDom._t);
       observeDom._t = requestAnimationFrame(() => runOnce());
     });
 
-    mo.observe(document.documentElement, {
-      childList: true,
-      subtree: true,
-    });
+    mo.observe(document.documentElement, { childList: true, subtree: true });
+  };
+
+  const disconnectObserver = () => {
+    if (mo) {
+      mo.disconnect();
+      mo = null;
+    }
+  };
+
+  const bootCycle = () => {
+    // Re-arm and re-enable for this load/route
+    armedUntil = Date.now() + ARM_MS;
+    collapsedOnce.clear();
+    userOverride.clear();
+
+    observeDom();
+    runOnce();
+    startRetryLoop();
   };
 
   // ---- Boot ----
   hookHistory();
-  observeDom();
+  installUserClickGuard();
+  bootCycle();
 
-  // Initial + short retry loop (helps with lazy sidebar mounts)
-  runOnce();
-  startRetryLoop();
-
-  // Re-run on route changes
   window.addEventListener("cgpt:route", () => {
     log("route change");
-    runOnce();
-    startRetryLoop();
+    bootCycle();
   });
 })();
