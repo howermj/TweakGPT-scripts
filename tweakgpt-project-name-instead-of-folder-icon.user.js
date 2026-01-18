@@ -1,13 +1,15 @@
 // Filename: tweakgpt-project-name-instead-of-folder-icon.user.js
 // ==UserScript==
-// @name         TweakGPT – Show Project Name Instead of Folder Icon
+// @name         TweakGPT – Show GPT or Project Name in Header
 // @namespace    https://github.com/howermj/TweakGPT-scripts
-// @version      1.1
-// @description  Replaces the project “folder” icon in the top bar with the actual project name (taken from aria-label), matching header typography.
-// @author       howermj + Eve
+// @version      1.2
+// @description  Replaces the project “folder” icon in the top bar with the project name, matching header typography.
+// @author       howermj + Eve (GPT-5.2 Thinking)
 // @match        https://chat.openai.com/*
 // @match        https://chatgpt.com/*
 // @grant        none
+// @downloadURL  https://raw.githubusercontent.com/howermj/TweakGPT-scripts/main/tweakgpt-project-name-instead-of-folder-icon.user.js
+// @updateURL    https://raw.githubusercontent.com/howermj/TweakGPT-scripts/main/tweakgpt-project-name-instead-of-folder-icon.user.js
 // ==/UserScript==
 
 (() => {
